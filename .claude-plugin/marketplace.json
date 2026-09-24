@@ -1,0 +1,14 @@
+{
+  "name": "search-x-posts",
+  "description": "Search X (Twitter) through the Grok Build CLI, with every post checked against X's own data.",
+  "owner": {
+    "name": "exgota"
+  },
+  "plugins": [
+    {
+      "name": "search-x-posts",
+      "source": "./",
+      "description": "Search X (Twitter) through the Grok Build CLI and check every post against X's own data."
+    }
+  ]
+}

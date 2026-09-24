@@ -1,0 +1,16 @@
+{
+  "name": "search-x-posts",
+  "description": "Search X (Twitter) through the Grok Build CLI and check every post against X's own data.",
+  "author": {
+    "name": "exgota",
+    "url": "https://github.com/exgota"
+  },
+  "license": "MIT",
+  "keywords": [
+    "x",
+    "twitter",
+    "grok",
+    "search",
+    "research"
+  ]
+}
