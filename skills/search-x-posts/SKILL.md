@@ -4,7 +4,7 @@ description: Search X (Twitter) for live posts through the local Grok CLI, then 
 license: MIT
 compatibility: Requires the Grok Build CLI (xAI), signed in, and Python 3.8 or later. Tested on macOS with Grok Build 1.0.62.
 metadata:
-  version: "1.2.0"
+  version: "1.2.1"
 ---
 
 # Search X posts
@@ -36,7 +36,7 @@ X posts are **leads**: what an account said, not what is true.
    - `unavailable`: X withholds it (deleted, protected or age-restricted). The fields are Grok's copy. In lookup mode, such a post goes to `rejected` instead.
    - `unchecked`: X's embed endpoint was unreachable. The fields are Grok's copy.
 
-   `rejected` lists posts the script dropped, each with a `reason`: no status ID in the URL, no such post on X, an ID that belongs to a different post, or the same text as another account's post. `handle_changed_from` means the account was renamed: search again with the current `handle`. If `posts` is empty or the run stopped, narrow the brief and search once more, then report the gap. `update_available` means a newer version of this skill exists: tell the user once, and update only if they agree, using the field's instructions.
+   `rejected` lists posts the script dropped, each with a `reason`: no status ID in the URL, no such post on X, an ID that belongs to a different post, or the same text as another account's post. `handle_changed_from` means the account was renamed: search again with the current `handle`. If `posts` is empty or the run stopped, narrow the brief and search once more, then report the gap.
 4. **Check.** Confirm every claim the answer rests on against a primary source (the company's own site or docs, a filing, established reporting) with web search. A claim with no primary source stays attributed: "@handle says...".
 5. **Report.** What the posts say, each linked, how sure you are, and what the posts leave unestablished. Mention the cost when a call passed 25 cents.
 

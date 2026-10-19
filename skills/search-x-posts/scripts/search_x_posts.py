@@ -33,12 +33,8 @@ Guards, each from a failure seen in testing (Sep 2026):
 - Effort defaults to medium: in a 24-run comparison it was the only level that used its search budget
   on a filtered query (5 of 6 qualifying posts, against 1 for low and high).
 
-Once a day the script also fetches this skill's SKILL.md from GitHub to compare versions. When a newer
-version exists, the output gains "update_available", and the agent asks the user before updating.
-Set SEARCH_X_POSTS_NO_UPDATE_CHECK=1 to turn the check off.
-
 Output (stdout): {"posts": [...], "rejected": [...], "x_searches", "web_searches", "search_queries",
-"stopped", "attempts", "seconds", "tokens", "cost_usd", "effort", "model", "update_available"?}
+"stopped", "attempts", "seconds", "tokens", "cost_usd", "effort", "model"}
 """
 import argparse
 import contextlib
@@ -75,20 +71,7 @@ EMBED_ATTEMPTS = 3
 COPIED_TEXT_MINIMUM_LENGTH = 80
 TEXT_MATCH_THRESHOLD = 0.85
 
-SKILL_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AGENT_DEFINITION = os.path.join(os.path.dirname(os.path.abspath(__file__)), "x_search_agent.md")
-REPOSITORY_URL = "https://github.com/exgota/search-x-posts"
-LATEST_SKILL_URL = "https://raw.githubusercontent.com/exgota/search-x-posts/main/skills/search-x-posts/SKILL.md"
-UPDATE_CHECK_INTERVAL_SECONDS = 24 * 60 * 60
-UPDATE_CHECK_STATE = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
-                                  "search-x-posts", "update_check.json")
-UPDATE_INSTRUCTIONS = (
-    "Tell the user a newer version exists and ask before updating. "
-    "Claude Code plugin: /plugin marketplace update search-x-posts, then /plugin update search-x-posts@search-x-posts. "
-    "Skills CLI: npx skills update search-x-posts. "
-    f"Manual install: replace this skill folder with skills/search-x-posts from {REPOSITORY_URL}. "
-    "To stop these checks, set SEARCH_X_POSTS_NO_UPDATE_CHECK=1."
-)
 
 DISALLOWED_TOOLS = [
     "run_terminal_command", "run_terminal_cmd", "write", "search_replace", "read_file",
@@ -536,60 +519,6 @@ def download_media(posts, directory):
                     item["download_error"] = str(error)[:200]
 
 
-# Update check
-
-def skill_version(skill_text):
-    parts = skill_text.split("---", 2)
-    frontmatter = parts[1] if skill_text.startswith("---") and len(parts) == 3 else ""
-    match = re.search(r"^\s+version:\s*[\"']?(\d+(?:\.\d+)*)", frontmatter, re.M)
-    return match.group(1) if match else None
-
-
-def version_key(version):
-    try:
-        return tuple(int(part) for part in str(version).split("."))
-    except ValueError:
-        return None
-
-
-def update_notice():
-    """Compare this copy's version with the latest on GitHub, at most once a day. Never raises."""
-    if os.environ.get("SEARCH_X_POSTS_NO_UPDATE_CHECK"):
-        return None
-    try:
-        with open(os.path.join(SKILL_DIRECTORY, "SKILL.md")) as file:
-            current = skill_version(file.read())
-    except OSError:
-        return None
-    if not current:
-        return None
-    try:
-        with open(UPDATE_CHECK_STATE) as file:
-            state = json.load(file)
-    except (OSError, ValueError):
-        state = {}
-    latest = state.get("latest")
-    if time.time() - (state.get("checked_at") or 0) >= UPDATE_CHECK_INTERVAL_SECONDS:
-        try:
-            request = urllib.request.Request(LATEST_SKILL_URL, headers=REQUEST_HEADERS)
-            with urllib.request.urlopen(request, timeout=3) as response:
-                latest = skill_version(response.read().decode("utf-8", "replace")) or latest
-        except (urllib.error.URLError, OSError, ValueError):
-            pass
-        try:
-            os.makedirs(os.path.dirname(UPDATE_CHECK_STATE), exist_ok=True)
-            temporary_path = f"{UPDATE_CHECK_STATE}.{os.getpid()}"
-            with open(temporary_path, "w") as file:
-                json.dump({"checked_at": time.time(), "latest": latest}, file)
-            os.replace(temporary_path, UPDATE_CHECK_STATE)
-        except OSError:
-            pass
-    latest_key, current_key = version_key(latest), version_key(current)
-    if latest_key and current_key and latest_key > current_key:
-        return {"current": current, "latest": latest, "instructions": UPDATE_INSTRUCTIONS}
-    return None
-
-
 def main():
     parser = argparse.ArgumentParser(description="Search X through the Grok Build CLI, check every post against X, and print JSON.")
     parser.add_argument("brief", nargs="?", help="what to find: topic or account, time window, and what counts as a match")
@@ -661,9 +590,6 @@ def main():
         download_media(posts, arguments.download_media)
 
     output = {"posts": posts, "rejected": rejected, **result}
-    notice = update_notice()
-    if notice:
-        output["update_available"] = notice
     print(json.dumps(output, indent=2, ensure_ascii=False))
     if error:
         print(error, file=sys.stderr)

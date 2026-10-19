@@ -69,21 +69,18 @@ A post in the output, trimmed to the main fields:
 
 ## Updating
 
-Once a day, the script checks this repository for a newer version. When one exists, its output includes `update_available`, and the skill tells your agent to ask you before updating. To update:
+The skill never checks for updates. To update:
 
 - Claude Code plugin: `/plugin marketplace update search-x-posts`, then `/plugin update search-x-posts@search-x-posts`
 - Skills CLI: `npx skills update search-x-posts`
 - By hand: copy the new `skills/search-x-posts/` over the old one.
 
-Set `SEARCH_X_POSTS_NO_UPDATE_CHECK=1` to turn the check off.
-
 ## What leaves your machine
 
 - Your brief goes to xAI, through Grok.
 - The ID of every post Grok returns goes to X's embed endpoint. Media downloads come from X's media servers.
-- Once a day, a request for this repository's `SKILL.md` goes to GitHub.
 
-The script sends nothing else. It stores only media you ask to download, `--stream-log` output if you set it, and an update-check file in `~/.cache/search-x-posts/` (or under `$XDG_CACHE_HOME`). What the Grok CLI itself sends and stores is up to Grok.
+The script sends nothing else. It stores only media you ask to download and `--stream-log` output if you set it. What the Grok CLI itself sends and stores is up to Grok.
 
 ## How it works
 
