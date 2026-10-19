@@ -8,7 +8,11 @@ Two modes:
 Grok runs headless with its server-side X search tools and nothing that touches this machine: local
 tools are removed by name (--disallowed-tools), shell and file access are denied by permission rule
 (--deny), and the process runs under the kernel sandbox (--sandbox strict) in a throwaway directory.
-Removing tools by name matters: an allowlist (--tools) silently drops the X tools.
+Removing tools by name matters: an allowlist (--tools) drops the X tools unless it names x_search.
+
+Grok runs as this skill's own agent (x_search_agent.md, --agent), never the user's default agent: a
+default agent set in ~/.grok/config.toml once ran every search under an unrelated persona and model.
+The agent's short system prompt replaces Grok's coding prompt (437 bytes against about 7,400).
 
 X tool results never appear in Grok's output stream, so posts come from Grok's final answer,
 constrained by a JSON schema. Every post is then looked up on cdn.syndication.twimg.com (the
@@ -19,8 +23,13 @@ text is kept when its opening matches.
 
 Guards, each from a failure seen in testing (Sep 2026):
 - Search cap in the prompt, plus a hard stop at cap + SEARCH_CEILING_MARGIN (one uncapped call ran 45).
+- Grok must be signed in, checked with `grok models` before any search (under a second, no model
+  call). Signed out, Grok has no X tools and retries its 401 for minutes (Oct 2026).
 - An answer with no X search behind it is discarded and retried once (the X tools were missing from
   4 of 24 sessions, and Grok then invented posts).
+- A post whose text matches an earlier post by another account is moved to "rejected" (copied posts
+  passed as separate voices in an Oct 2026 test).
+- Embed lookups retry with backoff (2 s, then 6 s): four parallel runs once left a whole run unchecked.
 - Effort defaults to medium: in a 24-run comparison it was the only level that used its search budget
   on a filtered query (5 of 6 qualifying posts, against 1 for low and high).
 
@@ -62,9 +71,12 @@ REQUEST_HEADERS = {"User-Agent": "search-x-posts/1.0"}
 EMBED_TIMEOUT_SECONDS = 15
 EMBED_PAUSE_SECONDS = 0.2
 EMBED_FAILURES_BEFORE_GIVING_UP = 3
+EMBED_ATTEMPTS = 3
+COPIED_TEXT_MINIMUM_LENGTH = 80
 TEXT_MATCH_THRESHOLD = 0.85
 
 SKILL_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+AGENT_DEFINITION = os.path.join(os.path.dirname(os.path.abspath(__file__)), "x_search_agent.md")
 REPOSITORY_URL = "https://github.com/exgota/search-x-posts"
 LATEST_SKILL_URL = "https://raw.githubusercontent.com/exgota/search-x-posts/main/skills/search-x-posts/SKILL.md"
 UPDATE_CHECK_INTERVAL_SECONDS = 24 * 60 * 60
@@ -106,6 +118,7 @@ POST_SCHEMA = {
                     "url": {"type": "string"},
                     "text": {"type": "string"},
                     "likes": {"type": "integer"},
+                    "expanded_text": {"type": "string"},
                 },
                 "required": ["handle", "posted_at", "url", "text"],
             },
@@ -124,7 +137,11 @@ Rules:
 - Use x_keyword_search in Top mode for high-engagement posts and Latest mode for new posts, and x_semantic_search for other wordings. Use since:, until: and from: operators when the brief sets a window or an account.
 - Use web_search at most once, and only to identify who or what the brief is about.
 - Return at most {posts} posts, each one a post your X tools returned in this session. Copy its full text exactly. Give its URL as https://x.com/<handle>/status/<id> and its like count when the tool shows it.
+- Skip link lists, listicles and text copied from another account, unless the brief asks for them.
 - If nothing matches, return an empty posts list."""
+
+EXPAND_RULE = """
+- For each post you return that links an X Article or opens a thread, fetch it with x_thread_fetch and put the article's or thread's full text in expanded_text. These fetches count toward your X tool calls."""
 
 
 class ScriptError(Exception):
@@ -142,12 +159,25 @@ def find_grok_binary():
                       "or point GROK_BINARY at the binary.")
 
 
+def require_sign_in(binary):
+    try:
+        check = subprocess.run([binary, "models"], capture_output=True, text=True, timeout=30,
+                               env={**os.environ, **ISOLATION_ENVIRONMENT})
+    except (OSError, subprocess.TimeoutExpired) as problem:
+        raise ScriptError(f"Could not check Grok's sign-in: {problem}")
+    if "not authenticated" in (check.stdout + check.stderr).lower():
+        raise ScriptError("Grok is signed out, so its X tools are unavailable. Run `grok login`, then search again.")
+
+
 def build_command(binary, arguments, workspace):
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     prompt = PROMPT_TEMPLATE.format(now=now, brief=arguments.brief, searches=arguments.searches, posts=arguments.posts)
+    if arguments.expand:
+        prompt += EXPAND_RULE
     command = [
         binary, "-p", prompt,
         "--cwd", workspace,
+        "--agent", AGENT_DEFINITION,
         "--no-memory", "--no-subagents", "--max-turns", "4",
         "--sandbox", "strict",
         "--disallowed-tools", ",".join(DISALLOWED_TOOLS),
@@ -266,7 +296,8 @@ def run_grok_once(binary, arguments):
 
 def run_grok(arguments):
     binary = find_grok_binary()
-    spent = {"seconds": 0.0, "tokens": 0, "cost_usd": 0.0}
+    require_sign_in(binary)
+    spent ={"seconds": 0.0, "tokens": 0, "cost_usd": 0.0}
     for attempt in range(1, ATTEMPTS_WHEN_TOOLS_MISSING + 1):
         result, error = run_grok_once(binary, arguments)
         for key in spent:
@@ -313,7 +344,7 @@ class EmbedClient:
         if self.consecutive_failures >= EMBED_FAILURES_BEFORE_GIVING_UP:
             return "unchecked", None
         url = f"{EMBED_ENDPOINT}?id={status_id}&token={self.token(status_id)}"
-        for attempt in range(2):
+        for attempt in range(EMBED_ATTEMPTS):
             try:
                 request = urllib.request.Request(url, headers=REQUEST_HEADERS)
                 body = urllib.request.urlopen(request, timeout=EMBED_TIMEOUT_SECONDS).read()
@@ -330,7 +361,8 @@ class EmbedClient:
                     return "not_found", None
             except (urllib.error.URLError, OSError, ValueError):
                 pass
-            time.sleep(1)
+            if attempt + 1 < EMBED_ATTEMPTS:
+                time.sleep(2 * 3 ** attempt)  # 2 s, then 6 s: parallel runs trip X's rate limit
         self.consecutive_failures += 1
         return "unchecked", None
 
@@ -448,7 +480,9 @@ def checked_post(grok_post, client):
         return {**grok_post, "id": status_id, "verification": status, "note": note}, None
 
     post = post_from_embed(data)
-    similarity = text_similarity(grok_post.get("text"), post["text"], post["long_post"])
+    if grok_post.get("expanded_text"):
+        post["expanded_text"] = grok_post["expanded_text"]  # an X Article or thread Grok fetched; X's embed data cannot check it
+    similarity =text_similarity(grok_post.get("text"), post["text"], post["long_post"])
     handle_matches = (grok_post.get("handle") or "").lstrip("@").casefold() == (post["handle"] or "").casefold()
     if similarity < TEXT_MATCH_THRESHOLD and not handle_matches:
         return None, {**grok_post, "reason": f"status id belongs to a different post, by @{post['handle']}"}
@@ -568,6 +602,8 @@ def main():
     parser.add_argument("--download-media", metavar="DIRECTORY", help="save photos and video posters here; each media item gains a file path")
     parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS, help="seconds before Grok is stopped")
     parser.add_argument("--stream-log", help="append Grok's raw event stream to this file")
+    parser.add_argument("--expand", action="store_true",
+                        help="have Grok read linked X Articles and threads into expanded_text (uses X tool calls)")
     arguments = parser.parse_args()
     if not arguments.brief and not arguments.post:
         parser.error("give a brief to search, or --post to look up known posts")
@@ -608,11 +644,18 @@ def main():
         print(str(problem), file=sys.stderr)
         sys.exit(2)
 
-    unique, seen = [], set()
+    unique, seen, seen_texts = [], set(), {}
     for post in posts:
-        if post.get("id") not in seen:
-            seen.add(post.get("id"))
-            unique.append(post)
+        if post.get("id") in seen:
+            continue
+        text_key = comparable(post.get("text"))
+        original = seen_texts.get(text_key) if len(text_key) >= COPIED_TEXT_MINIMUM_LENGTH else None
+        if original and original.get("handle") != post.get("handle"):
+            rejected.append({**post, "reason": f"same text as {original.get('id')} by @{original.get('handle')}"})
+            continue
+        seen.add(post.get("id"))
+        seen_texts.setdefault(text_key, post)
+        unique.append(post)
     posts = unique if arguments.post and not arguments.brief else unique[:arguments.posts]
     if arguments.download_media:
         download_media(posts, arguments.download_media)

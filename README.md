@@ -10,13 +10,15 @@ It needs the [Grok Build CLI](https://x.ai/build), signed in to your xAI account
 - **Checks every post.** Each post is looked up by its ID. Posts that don't exist are moved to `rejected`. The rest take their text, time and author from X.
 - **Looks up known posts for free.** `--post <url>` skips Grok entirely.
 - **Pulls media.** `--download-media <dir>` saves photos and video poster frames, so an agent that reads images can see them.
+- **Reads X Articles and threads.** `--expand` has Grok fetch the long-form article or thread behind a post into `expanded_text`.
+- **Drops copied posts.** A post whose text matches another account's post is moved to `rejected`.
 - **Cost.** 4 to 12 cents per capped search in testing, 27 cents at most.
 
 ## Requirements
 
 - [Grok Build CLI](https://x.ai/build), signed in (`grok login`). Searches count toward your Grok plan's usage limits.
 - Python 3.8 or later. Standard library only, nothing to install.
-- Tested on macOS with Grok Build 1.0.41. Linux and Windows are untested.
+- Tested on macOS with Grok Build 1.0.62. Linux and Windows are untested.
 
 ## Install
 
@@ -85,10 +87,10 @@ The script sends nothing else. It stores only media you ask to download, `--stre
 
 ## How it works
 
-1. The script starts `grok -p` in a throwaway directory with isolation settings. Local tools are removed by name. Shell and file access are denied by permission rule. The process runs under Grok's strict kernel sandbox. Grok's loading of your Claude and Cursor configuration is switched off.
+1. The script checks that Grok is signed in (`grok models`, no model call); signed out, Grok has no X tools, so the script stops with a message to run `grok login`. It then starts `grok -p` in a throwaway directory with isolation settings, as the skill's own agent (`scripts/x_search_agent.md`), so a default agent in your Grok config cannot change the search. Local tools are removed by name. Shell and file access are denied by permission rule. The process runs under Grok's strict kernel sandbox. Grok's loading of your Claude and Cursor configuration is switched off.
 2. Grok searches X under a cap of 6 searches by default, 14 at most. The script counts searches in Grok's event stream and stops Grok if it goes more than 4 past the cap.
-3. Grok answers in a fixed JSON schema. If Grok answered without running a single X search, the answer is discarded and the search retried once. This happens when Grok's X tools are missing from a session.
-4. Every post is looked up on `cdn.syndication.twimg.com`, the endpoint behind X's embedded posts, and rebuilt from X's data.
+3. Grok answers in a fixed JSON schema. If Grok answered without running a single X search, the answer is discarded and the search retried once.
+4. Every post is looked up on `cdn.syndication.twimg.com`, the endpoint behind X's embedded posts, and rebuilt from X's data. Lookups retry with backoff when the endpoint rate-limits.
 
 ## Testing
 
@@ -102,13 +104,25 @@ On Sep 24, 2026, a comparison of Grok's reasoning effort levels ran 24 searches 
 
 Medium was the only level that used its search budget on a filtered query. When Grok's X tools worked, all 63 returned posts were real and their text matched. Invented posts came only from the 4 sessions where the X tools were missing, which is why the script now retries those. With 2 runs per task and level, only large differences are meaningful.
 
+On Oct 19, 2026, a second test ran 4 briefs at 6 and 14 searches, with relevance graded by hand, plus two follow-ups. One run per cell, so read it as direction:
+
+| Brief | Finding |
+| --- | --- |
+| One known post | Both caps found it. 6 used 1 search ($0.06); 14 spent 8 ($0.28). |
+| Launch sweep | Both returned 15 posts, 14 on topic, and shared only 6: the post cap limited breadth. |
+| Practitioner how-tos | 14 searches found about twice the relevant posts of 6. The substance sat in X Articles. |
+| One account, one month | 40 posts cost $0.62 (1.5 cents each), all verified, across 21 of 30 days. |
+
+`SKILL.md` turns this into flags per kind of brief. The sessions missing X tools that could be traced had a signed-out Grok, so the script now checks sign-in first.
+
 ## Limitations
 
 - **Unofficial endpoint.** `cdn.syndication.twimg.com` is undocumented and can change, rate-limit or disappear. If it becomes unreachable, posts come back marked `unchecked`, and the search itself still works.
 - **Long posts.** The embed data carries only the first 280 characters. In a search, the full text comes from Grok, with its opening checked against X. A lookup with `--post` returns the first 280 characters, and `note` says so.
 - **Renamed accounts.** Searching an old handle returns posts only up to the rename. Posts come back flagged `handle_changed_from`, and searching the current handle works.
 - **Video.** Poster frames are downloaded. Video files are not; the MP4 URL is in the output.
-- **Grok CLI changes.** The isolation flags and tool names match Grok Build 1.0.41. A later CLI version can rename them.
+- **Expanded text is Grok's copy.** X's embed data cannot check `expanded_text`.
+- **Grok CLI changes.** The isolation flags and tool names match Grok Build 1.0.62. A later CLI version can rename them.
 
 ## Disclaimer
 
